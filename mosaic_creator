@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DataBaseMDP="chronosisis"
+DataBaseMDP=$(cat mysqlpassword)
 
 if (( $# != 3 )); then
 	echo "Appelle à mosaic_creator incorecte"

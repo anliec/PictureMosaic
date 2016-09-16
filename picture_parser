@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DataBaseMDP="chronosisis"
+DataBaseMDP=$(cat mysqlpassword)
 
 if (( $# == 0 )); then
 	echo "Appelle à picture_parser incorecte"
