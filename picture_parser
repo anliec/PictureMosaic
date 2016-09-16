@@ -1,0 +1,87 @@
+#!/bin/bash
+
+DataBaseMDP="chronosisis"
+
+if (( $# == 0 )); then
+	echo "Appelle à picture_parser incorecte"
+	echo "l'appelle attendue est de la forme:"
+	echo "$0 <CheminAAnalyser>"
+	echo "avec:"
+	echo " - CheminAAnalyser: chemin vers le dossier contenant les images à ajouter a la base de donnée. C'est images pourront ensuite être utilisée lors de la création de mosaiques" 
+	exit
+fi
+
+if [[ ! -d $@ ]]; then
+	echo "Impossible de trouver le dossier $@"
+	exit
+fi
+
+searchPath=$(echo $@ | tr " " "\\ ")
+#echo $searchPath
+cd "$searchPath"
+#echo $(pwd)
+ret_code=$?
+if [ $ret_code != 0 ]; then
+   	printf "Erreur : [%d] lors de l'execusion de la commande: 'cd $@'\nexit\n" $ret_code
+   	exit $ret_code
+fi
+searchPath=$(pwd)
+
+files=$(find . -type f -iname '*.jpg')
+numberOfFiles=$(echo "$files" | wc -w)
+numberOfAddedFiles="0"
+echo "$numberOfFiles fichier JPEG trouvés"
+
+i="0"
+for picturePath in $files
+do
+	i=$(( $i + 1 ))
+	echo -en "\r\e[K$(( 100 * $i / $numberOfFiles ))%"
+
+	imageWidth=$(identify -format '%w %h' $picturePath)
+	imageHeight=$(echo $imageWidth | cut -d " " -f 2)
+	imageWidth=$(echo $imageWidth | cut -d " " -f 1)
+	
+	#only register image if of 3:2 ratio
+	if [[ $(($((imageWidth))/30)) == $(($((imageHeight))/20)) ]] ; then
+		output=$(convert $picturePath -resize 3x2  txt:)
+
+		output=${output:46} #skip first line
+		i=0;
+		colors="" 
+
+		while IFS='' read -r line || [[ -n "$line" ]]; do
+			values=${line:6:11}
+			values=${values%%)*}
+			values=$(echo $values | tr "," " ") #separate RGB values
+			#echo "$values"
+			colors+="$values " 
+		done <<< "$output"
+
+		mysql_command="INSERT INTO imagesVal3x2 (imagePath,pix0x0_R,pix0x0_G,pix0x0_B,pix1x0_R,pix1x0_G,pix1x0_B,pix2x0_R,pix2x0_G,pix2x0_B,pix0x1_R,pix0x1_G,pix0x1_B,pix1x1_R,pix1x1_G,pix1x1_B,pix2x1_R,pix2x1_G,pix2x1_B) VALUES('$picturePath'"
+
+		for val in ${colors[*]}
+		do 
+			mysql_command+=",$val"
+		done
+
+		mysql_command+=");"
+
+		mysql -D photos -u root -p${DataBaseMDP} -e "$mysql_command" 2>/dev/null
+		ret_code=$?
+		if [ $ret_code != 0 ]; then
+			printf "Error : [%d] when executing command: '$mysql_command' $ret_code\n"
+			#exit $ret_code
+		else
+			numberOfAddedFiles=$(( $numberOfAddedFiles + 1 ))
+		fi
+	else
+		echo "wrong image size: $imageWidth $imageHeight on file $picturePath"
+	fi
+done
+
+echo ""
+echo "$numberOfAddedFiles fichiers ont été ajouté"
+
+
+

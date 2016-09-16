@@ -1,0 +1,141 @@
+#!/bin/bash
+
+DataBaseMDP="chronosisis"
+
+if (( $# != 3 )); then
+	echo "Appelle à mosaic_creator incorecte"
+	echo "l'appelle attendue est de la forme:"
+	echo "$0 <ImageSource> <DefinitionLargueur> <DefinitionHauteur>"
+	echo "avec:"
+	echo " - ImageSource: chemin vers l'image à transformer en mosaique"
+	echo " - DefinitionLargueur: nombre d'image utilisé pour reconstruire l'image source sur la largueur"
+	echo " - DefinitionHauteur: nombre d'image utilisé pour reconstruire l'image source sur la hauteur"
+	echo ""
+	echo "Attention: le ratio de l'image source n'est pas concervée. Le ratio final est celui corespondant aux deux paramètres précédents. Les images utilisé pour la reconstruction ont toutes le format 3:2"	
+	exit
+fi
+
+if [[ ! -f $1 ]]; then
+	echo "imposible de trouver le fichier $1 depuis le répertoire courant ($(pwd))"
+	exit
+fi
+
+targetHeight=$(( $3 * 2 ))
+targetWidth=$(( $2 * 3 ))
+
+#resize the image without taking care of the aspec ratio, write result to "target.png"
+convert $1 -resize ${targetWidth}x${targetHeight}\! target.png
+
+nbrImHeight=$(($((targetHeight))/2))
+nbrImWidth=$(($((targetWidth))/3))
+
+echo "Nombre d'image utilisée pour la reconstruction"
+echo "hauteur:  $nbrImHeight"
+echo "largueur: $nbrImWidth"
+echo "L'image à approcher a donc la définition suivante: ${targetWidth}x${targetHeight}"
+echo "L'image source, convertie a cette dimention s'appelle target.png"
+echo "L'image resultante aura donc comme définition: $(( $targetWidth * 100 ))x$(( $targetHeight * 100 )) ($(( $targetWidth * $targetHeight / 100 )) Mpx)"
+echo ""
+echo "Pour interompre le programme apuyer sur: Ctrl + C (cette action entrainera la perte de tout ce qui a été fait lors de cette exécution)"
+echo ""
+echo "Recherche des images les mieux adapté à la mosaique"
+
+
+tileFile="" #to store the name of every selected tile for use of montage command
+
+# "const"
+sqlColumn="pix0x0_R pix0x0_G pix0x0_B pix1x0_R pix1x0_G pix1x0_B pix2x0_R pix2x0_G pix2x0_B pix0x1_R pix0x1_G pix0x1_B pix1x1_R pix1x1_G pix1x1_B pix2x1_R pix2x1_G pix2x1_B"
+
+#create a temp directory for images if it does't exist
+if [[ ! -d pictures.tmp ]]; then
+	mkdir pictures.tmp
+fi
+
+for y in $(seq 1 $nbrImHeight) ; do
+	for x in $(seq 1 $nbrImWidth) ; do
+		echo -en "\r\e[K$(( ( ( ($((y))-1)*$((nbrImWidth)) )+$((x)) ) * 100 / $((nbrImWidth)) / $((nbrImHeight)) ))%"
+	
+		#echo "y:$y x:$x"
+		xmin=$(( $((x)) *3 - 3 ))
+		ymin=$(( $((y)) *2 - 2 ))
+		convert target.png -crop 3x2+${xmin}+${ymin} pictures.tmp/targetx${x}y${y}.png
+		output=$(convert target.png -crop 3x2+${xmin}+${ymin} txt:)
+		#echo $output
+		
+		output=${output:46} #skip first line
+		
+		colors=""
+		while IFS='' read -r line || [[ -n "$line" ]]; do
+			values=${line:6:11}
+			values=${values%%)*}
+			values=$(echo $values | tr "," " ") #separate RGB values
+			#echo "values: $values"
+			colors+="$values " 
+		done <<< "$output"
+		
+		#echo "colors: $colors"
+		
+		sql="SELECT imagePath FROM photos.imagesVal3x2 WHERE "
+		sqlOrderBy=""
+		for i in $(seq 1 18) ; do
+			#get column name and value
+			currantColumn=$(echo $sqlColumn | awk "{ print \$$i ;}")
+			currantValue=$(echo $colors | awk "{ print \$$i ;}")
+			# generate where statment
+			max=$(( $((currantValue)) +100))
+			min=$(( $((currantValue)) -100))
+			sql+="$currantColumn < $max AND $currantColumn > $min "
+			# generate order by statment
+			sqlOrderBy+="ABS($currantColumn - $currantValue) "
+			#manage last value case
+			if [ $i != 18 ]
+			then
+				sql+="AND "
+				sqlOrderBy+="+ "
+			fi
+		done
+		
+		sql+="ORDER BY $sqlOrderBy ASC "
+		
+		sql+="LIMIT 1 " # only select the first result
+		
+		sql+=";" #close sql request
+		
+		#echo $sql
+		mysqlret=$(mysql -D photos -u root -p${DataBaseMDP} -e "$sql" 2>/dev/null)
+		
+		mysqlret=${mysqlret##imagePath} #delete the title of the column
+		
+		#echo "mysqlret : \"$mysqlret\""
+		
+		mysqlret=$(echo $mysqlret | tr ':' '\:')
+		
+		#echo convert "$mysqlret" -resize 300x200 ./x${x}y${y}.jpg
+		
+		convert "$mysqlret" -resize 300x200 ./pictures.tmp/x${x}y${y}.jpg
+		ret_code=$?
+		#if there are a problem here, no need to continue, it's impossible to ge the right result.
+		if [ $ret_code != 0 ]; then
+		   	printf "Erreur : [%d] durant la selection du fichier \"$mysqlret\"\nexit\n" $ret_code
+		   	exit $ret_code
+		fi
+		tileFile+="pictures.tmp/x${x}y${y}.jpg "
+	done
+done
+
+exit
+
+echo "montage:"
+#sauvgarde la liste des fichier dans le bon ordre
+echo $tileFile >tileFile.sav
+
+montage $tileFile -tile ${nbrImWidth}x${nbrImHeight} -geometry +0+0 result.jpg
+ret_code=$?
+if [ $ret_code != 0 ]; then
+   	printf "Erreur : [%d] durant le montage\nexit\n" $ret_code
+   	exit $ret_code
+else
+	echo "Montage terminée avec succès !"
+fi
+
+
